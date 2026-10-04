@@ -267,6 +267,63 @@ Type: `Error`
 
 A custom error.
 
+## Committed operations (unknown-result protocol)
+
+Some operations may already be committed (an irreversible side effect, such as a sent request) by the time they fail. Blindly retrying them can apply the effect twice. The `p-retry/committed` sub-export wraps `pRetry` (which stays unchanged) with an explicit commit protocol:
+
+- `input` receives a per-attempt context `{attemptNumber, committed, markCommitted()}`. A fresh context is created for every attempt, so commit state never leaks from one attempt into the next.
+- Call `attempt.markCommitted()` at the exact point where the operation becomes non-replayable. The wrapper never guesses this point from HTTP status codes or error shapes.
+- A failure **before** `markCommitted()` is safe and is retried under p-retry's normal conditions (`retries`, `shouldRetry`, `shouldConsumeRetry`, …).
+- A failure **after** `markCommitted()` stops retrying immediately and rejects with an `UnknownResultError` (marked `unknownResult: true`, original failure on `cause`), unless the caller explicitly grants replay permission via the `shouldReplay` option (sync or async). Returning `true` lets the failure fall back to p-retry's normal retry conditions.
+- An aborted `signal` always wins: cancellation is never overridden by replay permission, even if the abort happens while an async `shouldReplay` is pending.
+
+### pRetryCommitted(input, options?)
+
+Accepts all `pRetry` options, plus:
+
+#### shouldReplay(context)
+
+Type: `Function`
+
+Explicit replay permission, consulted only when an attempt failed after `markCommitted()` was called. Receives `{error, attemptNumber}`. Return `true` to allow the failure to be retried under p-retry's normal conditions; return `false` (or omit the option) to reject with an `UnknownResultError`. May return a promise.
+
+### Example: charge a payment
+
+```js
+import pRetryCommitted, {isUnknownResultError} from 'p-retry/committed';
+
+try {
+	const charge = await pRetryCommitted(async attempt => {
+		const response = await sendChargeRequest({amount: 1000});
+		attempt.markCommitted(); // The charge may now exist on the server.
+		return parseChargeResponse(response); // A failure here has an unknown result.
+	}, {retries: 3});
+} catch (error) {
+	if (isUnknownResultError(error)) {
+		// Do not retry blindly: reconcile with the payment provider instead.
+		await reconcileCharge(error.cause);
+	}
+}
+```
+
+### Example: send an email with an idempotency key
+
+```js
+import pRetryCommitted from 'p-retry/committed';
+
+const idempotencyKey = crypto.randomUUID();
+
+const receipt = await pRetryCommitted(async attempt => {
+	const response = await sendEmail({idempotencyKey, to, subject, body});
+	attempt.markCommitted(); // The email may have been queued for delivery.
+	return parseReceipt(response);
+}, {
+	retries: 3,
+	// Safe to replay only because the server dedupes on the idempotency key.
+	shouldReplay: () => true,
+});
+```
+
 ## Tip
 
 You can pass arguments to the function being retried by wrapping it in an inline arrow function:

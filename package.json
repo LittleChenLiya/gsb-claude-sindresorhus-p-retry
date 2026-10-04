@@ -12,8 +12,14 @@
 	},
 	"type": "module",
 	"exports": {
-		"types": "./index.d.ts",
-		"default": "./index.js"
+		".": {
+			"types": "./index.d.ts",
+			"default": "./index.js"
+		},
+		"./committed": {
+			"types": "./committed.d.ts",
+			"default": "./committed.js"
+		}
 	},
 	"sideEffects": false,
 	"engines": {
@@ -24,7 +30,9 @@
 	},
 	"files": [
 		"index.js",
-		"index.d.ts"
+		"index.d.ts",
+		"committed.js",
+		"committed.d.ts"
 	],
 	"keywords": [
 		"promise",
