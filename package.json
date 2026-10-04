@@ -12,19 +12,28 @@
 	},
 	"type": "module",
 	"exports": {
-		"types": "./index.d.ts",
-		"default": "./index.js"
+		".": {
+			"types": "./index.d.ts",
+			"default": "./index.js"
+		},
+		"./committed": {
+			"types": "./committed.d.ts",
+			"default": "./committed.js"
+		}
 	},
 	"sideEffects": false,
 	"engines": {
 		"node": ">=22"
 	},
 	"scripts": {
-		"test": "xo && ava && tsd"
+		"test": "xo && ava && tsd",
+		"test:committed": "node --test test-committed.js"
 	},
 	"files": [
 		"index.js",
-		"index.d.ts"
+		"index.d.ts",
+		"committed.js",
+		"committed.d.ts"
 	],
 	"keywords": [
 		"promise",
@@ -59,5 +68,10 @@
 		"rules": {
 			"no-await-in-loop": "off"
 		}
+	},
+	"ava": {
+		"files": [
+			"test.js"
+		]
 	}
 }

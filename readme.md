@@ -250,6 +250,128 @@ const fetchWithRetry = makeRetriable(fetch, {retries: 5});
 const response = await fetchWithRetry('https://sindresorhus.com/unicorn');
 ```
 
+### pRetryCommitted(input, options?)
+
+Retry wrapper for operations that may have committed before they fail.
+
+A retry is only safe when you know the operation had no side effects. Some operations — a payment, an email send, a database write — reach the remote service and commit, but the connection drops before the response comes back. Retrying blindly would commit twice; not retrying leaves the failure to the caller.
+
+`pRetryCommitted` makes the boundary explicit:
+
+- The operation receives an `attempt` context. Call `attempt.commit()` the moment the operation's side effects have left the process (for example, right after a `fetch` resolves, before reading the response).
+- A failure _before_ `commit()` is retried under the exact same rules as `pRetry` (`shouldRetry`, `shouldConsumeRetry`, `retries`, `maxRetryTime`, …).
+- A failure _after_ `commit()` rejects with an `UnknownResultError` (marked with `unknownResult: true`) and is **not** retried unless the caller explicitly grants replay permission through `onCommittedFailure`.
+- Each attempt gets a fresh context, so the committed state never leaks from one attempt to the next.
+- An `AbortSignal` always wins: when the signal is aborted, the promise rejects with the abort reason and replay permission is never consulted.
+
+The wrapper is built on top of `pRetry` and does not modify it. It never guesses HTTP status codes — only the operation itself knows when it has committed.
+
+```js
+import pRetryCommitted from 'p-retry/committed';
+```
+
+#### input
+
+Type: `Function`
+
+Receives an `attempt` context with:
+
+- `attemptNumber` - The attempt number (starts at 1)
+- `commit()` - Mark the current attempt as committed. Call it once, right after the operation's side effects have been sent, before the outcome is known.
+
+The function is expected to return a `Promise` or any value.
+
+#### options
+
+Type: `object`
+
+All [`pRetry` options](#pRetryinput-options) are passed through, plus:
+
+##### onCommittedFailure(context)
+
+Type: `Function`
+
+Called when an attempt fails after having committed. Return `true` to allow one more replay, `false` (the default) to reject with an `UnknownResultError`. The function can be async — its result is awaited before retrying. If it throws (or rejects), retrying is aborted with that error.
+
+An aborted `AbortSignal` always wins over this callback: when the signal is aborted, the promise rejects with the abort reason and the callback is never consulted, even if it would grant permission.
+
+The `context` object contains:
+
+- `error` - The error thrown by the operation
+- `attemptNumber` - The attempt number that failed
+
+```js
+const result = await pRetryCommitted(payOrder, {
+	retries: 3,
+	onCommittedFailure: async ({error, attemptNumber}) => {
+		// Ask the user, or a higher-level policy, for an explicit replay decision.
+		return await askUser(`Payment failed after sending (attempt ${attemptNumber}). Retrying may double-charge. Retry?`);
+	},
+});
+```
+
+### UnknownResultError
+
+Thrown when an operation fails after it may have committed and replay was not permitted.
+
+- `name` - Always `'UnknownResultError'`
+- `unknownResult` - Always `true`
+- `originalError` - The error thrown by the operation
+
+#### Example 1: payment (non-idempotent)
+
+```js
+import pRetryCommitted from 'p-retry/committed';
+
+async function payOrder(attempt) {
+	const response = await fetch('/api/pay', {
+		method: 'POST',
+		body: JSON.stringify({orderId}),
+	});
+
+	// The request has reached the server; the outcome is no longer locally knowable.
+	attempt.commit();
+
+	if (!response.ok) {
+		throw new Error(`Payment failed: ${response.statusText}`);
+	}
+
+	return response.json();
+}
+
+const result = await pRetryCommitted(payOrder, {
+	retries: 2,
+	onCommittedFailure: async () => await confirmWithUser('Retry payment? It may be charged twice.'),
+});
+```
+
+#### Example 2: sending an email
+
+```js
+import pRetryCommitted from 'p-retry/committed';
+
+async function sendEmail(attempt) {
+	const response = await fetch('/api/send-email', {
+		method: 'POST',
+		body: JSON.stringify(message),
+	});
+
+	// The email may already be sent; a lost response must not send it again without permission.
+	attempt.commit();
+
+	if (!response.ok) {
+		throw new Error(`Email failed: ${response.statusText}`);
+	}
+
+	return {sent: true};
+}
+
+await pRetryCommitted(sendEmail, {
+	retries: 2,
+	onCommittedFailure: async () => await confirmWithUser('Retry sending? The email may already have been sent.'),
+});
+```
+
 ### AbortError(message)
 ### AbortError(error)
 
