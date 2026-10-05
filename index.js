@@ -269,3 +269,218 @@ export function makeRetriable(function_, options) {
 		return pRetry(() => function_.apply(this, arguments_), options);
 	};
 }
+
+function createSemaphore(concurrency) {
+	let activeCount = 0;
+	const waitQueue = [];
+
+	return {
+		acquire(signal) {
+			if (signal?.aborted) {
+				return Promise.reject(signal.reason);
+			}
+
+			if (activeCount < concurrency) {
+				activeCount++;
+				return Promise.resolve();
+			}
+
+			return new Promise((resolve, reject) => {
+				const waiter = {resolve, reject};
+				waitQueue.push(waiter);
+
+				signal?.addEventListener('abort', () => {
+					const index = waitQueue.indexOf(waiter);
+					if (index !== -1) {
+						waitQueue.splice(index, 1);
+						reject(signal.reason);
+					}
+				}, {once: true});
+			});
+		},
+
+		release() {
+			activeCount--;
+
+			while (waitQueue.length > 0 && activeCount < concurrency) {
+				const waiter = waitQueue.shift();
+				activeCount++;
+				waiter.resolve();
+			}
+		},
+	};
+}
+
+async function runItemRetry({input, options, semaphore}) {
+	let attemptNumber = 0;
+	let retriesConsumed = 0;
+	const startTime = performance.now();
+
+	while (Number.isFinite(options.retries) ? retriesConsumed <= options.retries : true) {
+		options.signal?.throwIfAborted();
+		await semaphore.acquire(options.signal);
+		attemptNumber++;
+
+		let result;
+		try {
+			options.signal?.throwIfAborted();
+			result = await input(attemptNumber);
+			options.signal?.throwIfAborted();
+		} catch (error) {
+			// Release the permit before running any failure handling so that
+			// backoff and failure callbacks never occupy a slot.
+			semaphore.release();
+
+			if (await onAttemptFailure({
+				error,
+				attemptNumber,
+				retriesConsumed,
+				startTime,
+				options,
+			})) {
+				retriesConsumed++;
+			}
+
+			continue;
+		}
+
+		// Release the permit before returning so the slot is freed immediately.
+		semaphore.release();
+		return result;
+	}
+
+	throw new Error('Retry attempts exhausted without throwing an error.');
+}
+
+function validateBatchInputs(inputs) {
+	if (!Array.isArray(inputs)) {
+		throw new TypeError('Expected `inputs` to be an array of functions.');
+	}
+
+	for (const [index, input] of inputs.entries()) {
+		if (typeof input !== 'function') {
+			throw new TypeError(`Expected item at index ${index} to be a function, got ${typeof input}.`);
+		}
+	}
+}
+
+function validateConcurrency(concurrency) {
+	if (concurrency === undefined) {
+		return;
+	}
+
+	if (typeof concurrency !== 'number' || Number.isNaN(concurrency)) {
+		throw new TypeError('Expected `concurrency` to be a number or Infinity.');
+	}
+
+	if (concurrency < 1) {
+		throw new TypeError('Expected `concurrency` to be ≥ 1.');
+	}
+
+	if (Number.isFinite(concurrency) && !Number.isInteger(concurrency)) {
+		throw new TypeError('Expected `concurrency` to be an integer or Infinity.');
+	}
+}
+
+function normalizeBatchOptions(options) {
+	options = {...options};
+
+	validateRetries(options.retries);
+
+	if (Object.hasOwn(options, 'forever')) {
+		throw new Error('The `forever` option is no longer supported. For many use-cases, you can set `retries: Infinity` instead.');
+	}
+
+	validateConcurrency(options.concurrency);
+
+	options.concurrency ??= Number.POSITIVE_INFINITY;
+	options.retries ??= 10;
+	options.factor ??= 2;
+	options.minTimeout ??= 1000;
+	options.maxTimeout ??= Number.POSITIVE_INFINITY;
+	options.maxRetryTime ??= Number.POSITIVE_INFINITY;
+	options.randomize ??= false;
+	options.onFailedAttempt ??= () => {};
+	options.shouldRetry ??= () => true;
+	options.shouldConsumeRetry ??= () => true;
+
+	validateFunctionOption('onFailedAttempt', options.onFailedAttempt);
+	validateFunctionOption('shouldRetry', options.shouldRetry);
+	validateFunctionOption('shouldConsumeRetry', options.shouldConsumeRetry);
+	validateNumberOption('factor', options.factor, {min: 0, allowInfinity: false});
+	validateNumberOption('minTimeout', options.minTimeout, {min: 0, allowInfinity: false});
+	validateNumberOption('maxTimeout', options.maxTimeout, {min: 0, allowInfinity: true});
+	validateNumberOption('maxRetryTime', options.maxRetryTime, {min: 0, allowInfinity: true});
+
+	if (!(options.factor > 0)) {
+		options.factor = 1;
+	}
+
+	return options;
+}
+
+function createBatchPromise(itemPromises, results, signal) {
+	const batchPromise = new Promise((resolve, reject) => {
+		let settled = false;
+
+		const onAbort = () => {
+			if (settled) {
+				return;
+			}
+
+			settled = true;
+			reject(signal.reason);
+		};
+
+		signal?.addEventListener('abort', onAbort, {once: true});
+
+		(async () => {
+			try {
+				await Promise.all(itemPromises);
+			} catch (error) {
+				if (settled) {
+					return;
+				}
+
+				settled = true;
+				signal?.removeEventListener('abort', onAbort);
+				reject(error);
+				return;
+			}
+
+			if (settled) {
+				return;
+			}
+
+			settled = true;
+			signal?.removeEventListener('abort', onAbort);
+			resolve(results);
+		})();
+	});
+
+	batchPromise.drain = async () => {
+		await Promise.allSettled(itemPromises);
+	};
+
+	return batchPromise;
+}
+
+export function pRetryBatch(inputs, options = {}) {
+	validateBatchInputs(inputs);
+	options = normalizeBatchOptions(options);
+
+	options.signal?.throwIfAborted();
+
+	const semaphore = createSemaphore(options.concurrency);
+	const results = Array.from({length: inputs.length});
+
+	const itemPromises = inputs.map(async (input, index) => {
+		results[index] = await runItemRetry({
+			input,
+			options,
+			semaphore,
+		});
+	});
+
+	return createBatchPromise(itemPromises, results, options.signal);
+}

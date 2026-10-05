@@ -250,6 +250,82 @@ const fetchWithRetry = makeRetriable(fetch, {retries: 5});
 const response = await fetchWithRetry('https://sindresorhus.com/unicorn');
 ```
 
+### pRetryBatch(inputs, options?)
+
+Run multiple promise-returning or async functions with bounded concurrency, retrying each independently.
+
+Each item has its own retry state. Only actual function attempts count against the concurrency limit — failure callbacks and retry backoff waits release their slot, so other items can make progress while an item is waiting to retry.
+
+Results are returned in the original input order, regardless of completion order.
+
+One item exhausting its retries does not cancel the other items. Use `drain()` to wait for all in-flight attempts to settle.
+
+```js
+import {pRetryBatch} from 'p-retry';
+
+const results = await pRetryBatch([
+	async attemptNumber => fetch('https://example.com/1').then(response => response.json()),
+	async attemptNumber => fetch('https://example.com/2').then(response => response.json()),
+], {
+	concurrency: 2,
+	retries: 3,
+	minTimeout: 100,
+});
+
+console.log(results);
+//=> [result1, result2]
+```
+
+#### inputs
+
+Type: `Array<Function>`
+
+An array of functions, each receiving the attempt number as the first argument and expected to return a `Promise` or any value.
+
+#### options
+
+Type: `object`
+
+Accepts all the same options as [`pRetry`](#pRetryinput-options), plus:
+
+##### concurrency
+
+Type: `number`\
+Default: `Infinity`
+
+The maximum number of function attempts running concurrently. Only actual function invocations occupy a slot; failure callbacks and backoff waits release their slot.
+
+#### batchPromise.drain()
+
+Wait for every in-flight function attempt to settle.
+
+Useful after aborting a batch: functions that ignore the signal keep running and continue to occupy their concurrency slot until they settle. `drain()` waits for all of them.
+
+```js
+import {pRetryBatch} from 'p-retry';
+
+const controller = new AbortController();
+
+const batch = pRetryBatch([
+	async () => fetch('https://example.com'),
+], {
+	concurrency: 1,
+	signal: controller.signal,
+});
+
+controller.abort(new Error('User cancelled'));
+
+try {
+	await batch;
+} catch (error) {
+	console.log(error.message);
+	//=> 'User cancelled'
+}
+
+// Wait for in-flight attempts to settle
+await batch.drain();
+```
+
 ### AbortError(message)
 ### AbortError(error)
 

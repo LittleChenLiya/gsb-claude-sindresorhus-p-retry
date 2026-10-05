@@ -1,5 +1,5 @@
 import {expectType} from 'tsd';
-import pRetry, {AbortError, type RetryContext} from './index.js';
+import pRetry, {pRetryBatch, AbortError, type RetryContext, type BatchPromise} from './index.js';
 
 expectType<Promise<number>>(pRetry(async count => {
 	expectType<number>(count);
@@ -30,3 +30,19 @@ const abortError = new AbortError('foo');
 new AbortError(new Error('foo')); // eslint-disable-line no-new
 
 expectType<AbortError>(abortError);
+
+const batch = pRetryBatch([
+	async attemptNumber => {
+		expectType<number>(attemptNumber);
+		return 'foo';
+	},
+], {
+	concurrency: 2,
+	onFailedAttempt(context) {
+		expectType<RetryContext>(context);
+	},
+});
+expectType<BatchPromise<string>>(batch);
+const promised: Promise<string[]> = batch;
+expectType<Promise<string[]>>(promised);
+expectType<Promise<void>>(batch.drain());

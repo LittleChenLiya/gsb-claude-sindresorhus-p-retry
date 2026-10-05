@@ -249,6 +249,62 @@ export default function pRetry<T>(
 	options?: Options
 ): Promise<T>;
 
+export type BatchOptions = Options & {
+	/**
+	The maximum number of function attempts running concurrently.
+
+	Only actual function invocations occupy a slot. Failure callbacks and retry backoff waits release their slot, so other items can run while an item is waiting to retry.
+
+	Must be a positive integer or `Infinity`.
+
+	@default Infinity
+	*/
+	readonly concurrency?: number;
+};
+
+export type BatchPromise<T> = Promise<T[]> & {
+	/**
+	Wait for every in-flight function attempt to settle.
+
+	Useful after aborting a batch: functions that ignore the signal keep running and continue to occupy their concurrency slot until they settle. `drain()` waits for all of them.
+	*/
+	drain(): Promise<void>;
+};
+
+/**
+Run multiple promise-returning or async functions with bounded concurrency, retrying each independently.
+
+Each item has its own retry state. Only actual function attempts count against the concurrency limit — failure callbacks and backoff waits release their slot so other items can make progress.
+
+Results are returned in the original input order, regardless of completion order.
+
+One item exhausting its retries does not cancel the other items. Use `drain()` to wait for all in-flight attempts to settle.
+
+@param inputs - An array of functions, each receiving the attempt number as the first argument and expected to return a `Promise` or any value.
+@param options - Options for configuring the retry behavior, plus `concurrency`.
+
+@example
+```
+import {pRetryBatch} from 'p-retry';
+
+const results = await pRetryBatch([
+	async attemptNumber => fetch('https://example.com/1').then(response => response.json()),
+	async attemptNumber => fetch('https://example.com/2').then(response => response.json()),
+], {
+	concurrency: 2,
+	retries: 3,
+	minTimeout: 100,
+});
+
+console.log(results);
+//=> [result1, result2]
+```
+*/
+export function pRetryBatch<T>(
+	inputs: ReadonlyArray<(attemptNumber: number) => PromiseLike<T> | T>,
+	options?: BatchOptions
+): BatchPromise<T>;
+
 /**
 Wrap a function so that each call is automatically retried on failure.
 
