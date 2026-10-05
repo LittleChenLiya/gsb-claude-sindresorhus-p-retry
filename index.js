@@ -269,3 +269,5 @@ export function makeRetriable(function_, options) {
 		return pRetry(() => function_.apply(this, arguments_), options);
 	};
 }
+
+export {pRetryBatch} from './batch.js';

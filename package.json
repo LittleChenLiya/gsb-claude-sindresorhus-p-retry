@@ -20,11 +20,14 @@
 		"node": ">=22"
 	},
 	"scripts": {
-		"test": "xo && ava && tsd"
+		"test": "xo && ava && tsd",
+		"test:batch": "ava test-batch.js"
 	},
 	"files": [
 		"index.js",
-		"index.d.ts"
+		"index.d.ts",
+		"batch.js",
+		"batch.d.ts"
 	],
 	"keywords": [
 		"promise",

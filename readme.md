@@ -267,6 +267,72 @@ Type: `Error`
 
 A custom error.
 
+### pRetryBatch(tasks, options?)
+
+Run a batch of functions, each with its own independent `pRetry` retry state, while limiting only the concurrency of the actual function calls.
+
+The `concurrency` limit applies **only to the actual function calls**: a permit is acquired before each attempt and released as soon as the attempt settles. Backoff waits and failure callbacks (`onFailedAttempt`, `shouldRetry`, `shouldConsumeRetry`) never hold a permit, so other items can run while an item is waiting to retry. The retry loop as a whole never occupies a slot.
+
+Each item is retried independently and a failing item never cancels the other items. Results are settled `Promise.allSettled`-style into a fixed-length array that preserves the input order: `results[i]` always corresponds to `tasks[i]`.
+
+```js
+import {pRetryBatch} from 'p-retry';
+
+const batch = pRetryBatch([
+	() => fetchUser(1),
+	() => fetchUser(2),
+	() => fetchUser(3),
+], {
+	concurrency: 2,
+	retries: 3,
+	onFailedAttempt({index, attemptNumber, retriesLeft}) {
+		console.log(`Item ${index} attempt ${attemptNumber} failed. ${retriesLeft} retries left.`);
+	},
+});
+
+const results = await batch.promise;
+//=> [{status: 'fulfilled', value: …}, {status: 'fulfilled', value: …}, {status: 'rejected', reason: …}]
+```
+
+#### tasks
+
+Type: `Iterable<Function>`
+
+The functions to run. Each function receives the attempt number and the item index: `(attemptNumber, index)`.
+
+#### options
+
+Type: `object`
+
+Accepts all [`pRetry` options](#options), except that the `onFailedAttempt`, `shouldRetry`, and `shouldConsumeRetry` callbacks receive a context object that also includes the item `index`. Additionally:
+
+##### concurrency
+
+Type: `number` *(integer ≥ 1 or `Infinity`)*\
+Default: `Infinity`
+
+The maximum number of item function calls allowed to run at the same time. Only the actual function calls are limited; retry backoff and callbacks run without holding a slot.
+
+#### batch.promise
+
+Type: `Promise<Array<BatchResult>>`
+
+Resolves with the fixed-length results array (one slot per input item, in input order) once every item has fulfilled or rejected. Each slot is either `{status: 'fulfilled', value}` or `{status: 'rejected', reason}`. It never rejects because of an item failure.
+
+#### batch.results
+
+Type: `Array<BatchResult | undefined>`
+
+Live view of the result slots, in input order. A slot is `undefined` until the corresponding item settles.
+
+#### batch.cancel(reason?)
+
+Cancel the batch. Items still waiting for a permit are rejected with the given reason and their functions are never called — cancelling never starts a permit-waiting item. In-flight function calls are not interrupted: a non-cooperative function keeps its permit until it settles. Use `batch.drain()` to wait for those.
+
+#### batch.drain()
+
+Returns a promise that resolves once no permits are held and no items are waiting for one. Items sleeping between retries (backoff) do not hold permits, so `drain()` can resolve while retries are still pending.
+
 ## Tip
 
 You can pass arguments to the function being retried by wrapping it in an inline arrow function:
