@@ -238,6 +238,55 @@ Prevents retry timeouts from keeping the process alive.
 
 Only affects platforms with a `.unref()` method on timeouts, such as Node.js.
 
+##### cancelCallbacksOnAbort
+
+Type: `boolean`\
+Default: `false`
+
+Let the `signal` option also cancel the wait for the control callbacks `onFailedAttempt`, `shouldRetry`, and `shouldConsumeRetry`.
+
+When enabled, aborting the signal while one of these callbacks is still pending makes the `pRetry` promise reject immediately with the abort reason, without waiting for the callback to settle.
+
+A callback that settles after the abort is only observed for cleanup: its late return value cannot start a new attempt or change the retry counts, which stay frozen at the snapshot taken when the wait was aborted, and its late rejection is absorbed instead of becoming an unhandled rejection. A callback error that settles before the abort propagates as-is, preserving its `cause` chain.
+
+The default (`false`) keeps waiting for control callbacks exactly as before, even if the signal aborts in the meantime.
+
+Staged example:
+
+```js
+import pRetry from 'p-retry';
+
+const controller = new AbortController();
+
+const promise = pRetry(run, {
+	signal: controller.signal,
+	cancelCallbacksOnAbort: true,
+	async shouldRetry() {
+		// Stage 1: the attempt fails and this callback starts a slow check.
+		await slowHealthCheck();
+		return true;
+	},
+});
+
+// Stage 2: abort while `shouldRetry` is still pending.
+controller.abort(new Error('Cancelled'));
+
+// Stage 3: `promise` rejects immediately with 'Cancelled'.
+// The late `shouldRetry` result is ignored: no new attempt is started
+// and the retry counts stay frozen at the abort-time snapshot.
+```
+
+You can verify this behavior locally with the scoped Node commands:
+
+```sh
+# Run only the cancellation-related tests
+npx ava --match='*cancelCallbacksOnAbort*' --match='*callback*'
+
+# Lint and type-check the changed files
+npx xo index.js test.js
+npx tsd
+```
+
 ### makeRetriable(function, options?)
 
 Wrap a function so that each call is automatically retried on failure.

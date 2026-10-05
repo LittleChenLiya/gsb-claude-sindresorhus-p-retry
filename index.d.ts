@@ -214,6 +214,42 @@ export type Options = {
 	@default false
 	*/
 	readonly unref?: boolean;
+
+	/**
+	Let the `signal` option also cancel the wait for the control callbacks `onFailedAttempt`, `shouldRetry`, and `shouldConsumeRetry`.
+
+	When enabled, aborting the signal while one of these callbacks is still pending makes the `pRetry` promise reject immediately with the abort reason, without waiting for the callback to settle.
+
+	A callback that settles after the abort is only observed for cleanup: its late return value cannot start a new attempt or change the retry counts, which stay frozen at the snapshot taken when the wait was aborted, and its late rejection is absorbed instead of becoming an unhandled rejection.
+
+	A callback error that settles before the abort propagates as-is, preserving its `cause` chain.
+
+	@default false
+
+	@example
+	```
+	import pRetry from 'p-retry';
+
+	const controller = new AbortController();
+
+	const promise = pRetry(run, {
+		signal: controller.signal,
+		cancelCallbacksOnAbort: true,
+		async shouldRetry() {
+			// Stage 1: attempt fails, this callback starts a slow check.
+			await slowHealthCheck();
+			return true;
+		},
+	});
+
+	// Stage 2: abort while `shouldRetry` is still pending.
+	controller.abort(new Error('Cancelled'));
+
+	// Stage 3: `promise` rejects immediately with 'Cancelled'.
+	// The late `shouldRetry` result is ignored and no new attempt is started.
+	```
+	*/
+	readonly cancelCallbacksOnAbort?: boolean;
 };
 
 /**

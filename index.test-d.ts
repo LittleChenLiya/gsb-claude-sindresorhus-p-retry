@@ -26,6 +26,15 @@ expectType<Promise<string>>(pRetry(async () => 'value', {
 	minTimeout: 0,
 }));
 
+const controller = new AbortController();
+expectType<Promise<string>>(pRetry(async () => 'value', {
+	signal: controller.signal,
+	cancelCallbacksOnAbort: true,
+	async shouldRetry() {
+		return true;
+	},
+}));
+
 const abortError = new AbortError('foo');
 new AbortError(new Error('foo')); // eslint-disable-line no-new
 
