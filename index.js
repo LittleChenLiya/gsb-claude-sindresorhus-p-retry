@@ -36,6 +36,16 @@ function validateNumberOption(name, value, {min = 0, allowInfinity = false} = {}
 	}
 }
 
+function validateBooleanOption(name, value) {
+	if (value === undefined) {
+		return;
+	}
+
+	if (typeof value !== 'boolean') {
+		throw new TypeError(`Expected \`${name}\` to be a boolean.`);
+	}
+}
+
 function validateFunctionOption(name, value) {
 	if (value === undefined) {
 		return;
@@ -106,6 +116,50 @@ async function delayForRetry(delay, options) {
 	});
 }
 
+// Race a control callback against the abort signal.
+//
+// When `abortableCallbacks` is enabled and a signal is provided, aborting the
+// signal while waiting for a callback terminates the wait: the returned promise
+// rejects with the abort reason. The callback's eventual settlement is then
+// ignored — it cannot start a new attempt or change the retry count — and a
+// late rejection is swallowed so it never becomes an unhandled rejection.
+//
+// When the mode is disabled (the default), the callback wait is unaffected by
+// the signal and runs to completion as before.
+async function raceCallbackWithSignal(callbackPromise, options) {
+	if (!options.abortableCallbacks || !options.signal) {
+		return callbackPromise;
+	}
+
+	if (options.signal.aborted) {
+		throw options.signal.reason;
+	}
+
+	let onAbort;
+	const abortPromise = new Promise((_resolve, reject) => {
+		onAbort = () => {
+			reject(options.signal.reason);
+		};
+	});
+
+	options.signal.addEventListener('abort', onAbort, {once: true});
+
+	try {
+		return await Promise.race([callbackPromise, abortPromise]);
+	} finally {
+		// The race attaches handlers to `callbackPromise`, so a late rejection is
+		// still handled and never becomes an unhandled rejection.
+		options.signal.removeEventListener('abort', onAbort);
+	}
+}
+
+async function waitForCallback(callback, context, options) {
+	return raceCallbackWithSignal(
+		(async () => callback(context))(),
+		options,
+	);
+}
+
 async function onAttemptFailure({error, attemptNumber, retriesConsumed, startTime, options}) {
 	const normalizedError = error instanceof Error
 		? error
@@ -132,7 +186,7 @@ async function onAttemptFailure({error, attemptNumber, retriesConsumed, startTim
 			retryDelay: 0,
 		});
 
-		await options.onFailedAttempt(context);
+		await waitForCallback(options.onFailedAttempt, context, options);
 
 		throw normalizedError;
 	}
@@ -145,7 +199,7 @@ async function onAttemptFailure({error, attemptNumber, retriesConsumed, startTim
 		retryDelay: retriesLeft > 0 ? delayTime : 0,
 	});
 
-	const consumeRetry = await options.shouldConsumeRetry(consumeRetryContext);
+	const consumeRetry = await waitForCallback(options.shouldConsumeRetry, consumeRetryContext, options);
 	const effectiveDelay = consumeRetry && retriesLeft > 0 ? delayTime : 0;
 	const context = Object.freeze({
 		error: normalizedError,
@@ -155,7 +209,7 @@ async function onAttemptFailure({error, attemptNumber, retriesConsumed, startTim
 		retryDelay: effectiveDelay,
 	});
 
-	await options.onFailedAttempt(context);
+	await waitForCallback(options.onFailedAttempt, context, options);
 
 	if (calculateRemainingTime(startTime, maxRetryTime) <= 0) {
 		throw normalizedError;
@@ -171,7 +225,7 @@ async function onAttemptFailure({error, attemptNumber, retriesConsumed, startTim
 		throw normalizedError;
 	}
 
-	if (!await options.shouldRetry(context)) {
+	if (!await waitForCallback(options.shouldRetry, context, options)) {
 		throw normalizedError;
 	}
 
@@ -224,6 +278,7 @@ export default async function pRetry(input, options = {}) {
 	validateNumberOption('minTimeout', options.minTimeout, {min: 0, allowInfinity: false});
 	validateNumberOption('maxTimeout', options.maxTimeout, {min: 0, allowInfinity: true});
 	validateNumberOption('maxRetryTime', options.maxRetryTime, {min: 0, allowInfinity: true});
+	validateBooleanOption('abortableCallbacks', options.abortableCallbacks);
 
 	// Treat non-positive factor as 1 to avoid zero backoff or negative behavior
 	if (!(options.factor > 0)) {

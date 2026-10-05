@@ -238,6 +238,106 @@ Prevents retry timeouts from keeping the process alive.
 
 Only affects platforms with a `.unref()` method on timeouts, such as Node.js.
 
+##### abortableCallbacks
+
+Type: `boolean`\
+Default: `false`
+
+Whether aborting the `signal` while waiting for a control callback (`onFailedAttempt`, `shouldRetry`, or `shouldConsumeRetry`) terminates the wait.
+
+When `false` (the default), aborting the signal does not interrupt a pending callback — the callback runs to completion and its result still decides whether a retry happens.
+
+When `true`, aborting the signal while a callback is pending terminates the wait and rejects the promise with the abort reason. The callback's eventual resolution or rejection is then ignored: it cannot start a new attempt or change the retry count, and a late rejection does not become an unhandled rejection.
+
+Has no effect when `signal` is not provided.
+
+The control callbacks run in stages: `shouldConsumeRetry` → `onFailedAttempt` → `shouldRetry`. Aborting the signal during any stage terminates the wait immediately, so later stages never run.
+
+```js
+import pRetry from 'p-retry';
+
+const controller = new AbortController();
+
+// Abort during `shouldConsumeRetry`
+const promise = pRetry(() => {
+	throw new Error('fail');
+}, {
+	signal: controller.signal,
+	abortableCallbacks: true,
+	shouldConsumeRetry: () => new Promise(() => {}), // Never resolves
+});
+
+controller.abort(new Error('cancel'));
+
+// The promise rejects promptly with 'cancel' instead of waiting for the
+// never-resolving callback.
+await promise;
+```
+
+```js
+import pRetry from 'p-retry';
+
+const controller = new AbortController();
+
+// Abort during `onFailedAttempt`
+const promise = pRetry(() => {
+	throw new Error('fail');
+}, {
+	signal: controller.signal,
+	abortableCallbacks: true,
+	onFailedAttempt: () => new Promise(() => {}), // Never resolves
+});
+
+controller.abort(new Error('cancel'));
+
+await promise; // Rejects with 'cancel'
+```
+
+```js
+import pRetry from 'p-retry';
+
+const controller = new AbortController();
+
+// Abort during `shouldRetry`
+const promise = pRetry(() => {
+	throw new Error('fail');
+}, {
+	signal: controller.signal,
+	abortableCallbacks: true,
+	shouldRetry: () => new Promise(() => {}), // Never resolves
+});
+
+controller.abort(new Error('cancel'));
+
+await promise; // Rejects with 'cancel'
+```
+
+A late resolution or rejection after the abort is only cleanup: it cannot start a new attempt, change the retry count, or become an unhandled rejection.
+
+```js
+import pRetry from 'p-retry';
+
+const controller = new AbortController();
+let resolveShouldRetry;
+
+const promise = pRetry(() => {
+	throw new Error('fail');
+}, {
+	signal: controller.signal,
+	abortableCallbacks: true,
+	shouldRetry: () => new Promise(resolve => {
+		resolveShouldRetry = resolve;
+	}),
+});
+
+controller.abort(new Error('cancel'));
+
+await promise; // Rejects with 'cancel'
+
+// The late resolution is ignored — no new attempt starts.
+resolveShouldRetry(true);
+```
+
 ### makeRetriable(function, options?)
 
 Wrap a function so that each call is automatically retried on failure.

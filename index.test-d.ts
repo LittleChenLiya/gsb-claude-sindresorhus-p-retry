@@ -26,6 +26,14 @@ expectType<Promise<string>>(pRetry(async () => 'value', {
 	minTimeout: 0,
 }));
 
+expectType<Promise<void>>(pRetry(async () => {}, {
+	abortableCallbacks: true,
+}));
+
+expectType<Promise<void>>(pRetry(async () => {}, {
+	abortableCallbacks: false,
+}));
+
 const abortError = new AbortError('foo');
 new AbortError(new Error('foo')); // eslint-disable-line no-new
 

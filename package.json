@@ -20,7 +20,8 @@
 		"node": ">=22"
 	},
 	"scripts": {
-		"test": "xo && ava && tsd"
+		"test": "xo && ava && tsd",
+		"test:node": "node --test node-tests/abortable-callbacks.mjs"
 	},
 	"files": [
 		"index.js",

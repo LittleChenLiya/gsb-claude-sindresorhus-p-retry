@@ -207,6 +207,48 @@ export type Options = {
 	readonly signal?: AbortSignal | undefined;
 
 	/**
+	Whether aborting the `signal` while waiting for a control callback
+	(`onFailedAttempt`, `shouldRetry`, or `shouldConsumeRetry`) terminates the
+	wait.
+
+	When `false` (the default), aborting the signal does not interrupt a pending
+	callback — the callback runs to completion and its result still decides
+	whether a retry happens.
+
+	When `true`, aborting the signal while a callback is pending terminates the
+	wait and rejects the promise with the abort reason. The callback's eventual
+	resolution or rejection is then ignored: it cannot start a new attempt or
+	change the retry count, and a late rejection does not become an unhandled
+	rejection.
+
+	Has no effect when `signal` is not provided.
+
+	@default false
+
+	@example
+	```
+	import pRetry from 'p-retry';
+
+	const controller = new AbortController();
+
+	const promise = pRetry(() => {
+		throw new Error('fail');
+	}, {
+		signal: controller.signal,
+		abortableCallbacks: true,
+		shouldRetry: () => new Promise(() => {}), // Never resolves
+	});
+
+	controller.abort(new Error('cancel'));
+
+	// The promise rejects promptly with 'cancel' instead of waiting for the
+	// never-resolving `shouldRetry` callback.
+	await promise;
+	```
+	*/
+	readonly abortableCallbacks?: boolean;
+
+	/**
 	Prevents retry timeouts from keeping the process alive.
 
 	Only affects platforms with a `.unref()` method on timeouts, such as Node.js.
